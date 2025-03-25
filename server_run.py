@@ -1,6 +1,9 @@
 import copy
 import json
+import pickle
 import random
+import time
+import socket
 
 import numpy as np
 import torch
@@ -10,7 +13,7 @@ import config
 from config import *
 from model.server_side import ResNet18_server_side, Baseblock
 from util import tcp
-from util.utility import prRed, prGreen
+from util.utility import *
 
 # 随机数相关，保证结果相同
 random.seed(SEED)
@@ -51,38 +54,59 @@ def calculate_accuracy(fx, y):
     acc = 100.00 * correct.float()/preds.shape[0]
     return acc
 
-def server_send_to_client(dfx,idx):
+def server_send_to_client(dfx,conn):
     """
     Sending gradients to clients
     """
-    torch.save(dfx, f'{send_path}/grad.pth')
-    tcp.send_multi_file([f'{send_path}/grad.pth'],config.clients_addr[idx])
+    # 序列化
+    serialized_data = pickle.dumps(dfx)
+    tcp.send_data(serialized_data, conn)
+    '''
+    torch.save(dfx, f'{send_path}/grad{idx}.pth')
+    tcp.send_multi_file([f'{send_path}/grad{idx}.pth'],config.clients_addr[idx])
+    '''
 
-def fed_send_to_client(glob_weights,idx):
+def fed_send_to_client(glob_weights,conn):
     """
-    Sending glob_weights to clients
+    Sending global gradients to clients
     """
-    torch.save(glob_weights, f'{send_path}/glob_grad.pth')
-    tcp.send_multi_file([f'{send_path}/glob_grad.pth'],config.clients_addr[idx])
+    # 序列化
+    serialized_data = pickle.dumps(glob_weights)
+    tcp.send_data(serialized_data, conn)
+    '''
+    torch.save(glob_weights, f'{send_path}/glob_grad{idx}.pth')
+    tcp.send_multi_file([f'{send_path}/glob_grad{idx}.pth'],config.clients_addr[idx])
+    '''
 
-def server_recv_from_client():
+def server_recv_from_client(conn):
     """
     Receiving fx,y,and other from client
     """
+    received_data = tcp.recv_data(conn)
+    # 反序列化
+    data = pickle.loads(received_data)
+    '''
     tcp.receive_multi_file(config.recv_path, 3, config.server_addr)
-    with open(f'{config.recv_path}/other.json',encoding='utf-8') as f:
+    with open(f'{config.recv_path}/other{idx}.json',encoding='utf-8') as f:
         js_data = f.read()
     data = json.loads(js_data)
-    y = torch.load(f'{config.recv_path}/y.pth')
-    fx = torch.load(f'{config.recv_path}/fx.pth')
-    return fx, y, data['iter'], data['l_ep'], data['idx'], data['len_b']
+    y = torch.load(f'{config.recv_path}/y{idx}.pth')
+    fx = torch.load(f'{config.recv_path}/fx{idx}.pth')
+    '''
 
-def fed_recv_from_client():
+    return data['fx'], data['y'], data['iter'], data['l_ep'], data['idx'], data['len_b']
+
+def fed_recv_from_client(conn):
     """
     Receiving local weights from client
     """
+    received_data = tcp.recv_data(conn)
+    # 反序列化
+    local_w = pickle.loads(received_data)
+    '''
     tcp.receive_multi_file(config.recv_path, 1, config.server_addr)
-    local_w = torch.load(f'{config.recv_path}/weights.pth')
+    local_w = torch.load(f'{config.recv_path}/weights{idx}.pth')
+    '''
     return local_w
 
 def train_server(fx_client, y, l_epoch_count, l_epoch, idx, len_batch):
@@ -92,6 +116,7 @@ def train_server(fx_client, y, l_epoch_count, l_epoch, idx, len_batch):
     #len_batch: 一个批次的大小
     # l_epoch_count: 客户端本地已经训练次数
     # l_epoch: 客户端本地需要训练次数
+    # ps: l_epoch和epoch不是一个东西，l_epoch是指每一轮客户端可能本地迭代多次
     global net_model_server, criterion, optimizer_server, device, batch_acc_train, batch_loss_train, l_epoch_check, fed_check
     global loss_train_collect, acc_train_collect, count1, acc_avg_all_user_train, loss_avg_all_user_train, idx_collect, w_locals_server, w_glob_server, net_server
     global loss_train_collect_user, acc_train_collect_user, lr
@@ -354,6 +379,8 @@ net_model_server = [net_glob_server for i in range(num_users)]
 # 用于存储每轮选择的客户端的索引，每轮都会随机选择一部分客户端来参与（frac=1则全部参与）。
 idx_collect = []
 
+epoch_time_collect = []
+
 # 是否需要在每个客户端上进行本地训练
 # 如果为 True，就表示需要在每个客户端上训练一定轮数（epochs）的数据，然后把模型的参数发送给服务器；
 # 如果为 False，就表示不需要在每个客户端上进行本地训练，直接使用服务器上的全局模型。
@@ -367,9 +394,9 @@ fed_check = False
 
 program = "SFLV1 ResNet18 on HAM10000"
 print(f"---------{program}----------")              # this is to identify the program in the slurm outputs files
-
-
+start = time.time()
 for iter in range(epochs):
+    epoch_start = time.time()
     # 每一轮训练，随机选择一部分用户（默认全部选择）
     m = max(int(frac * num_users), 1)
     idxs_users = np.random.choice(range(num_users), m, replace = False)
@@ -377,51 +404,71 @@ for iter in range(epochs):
     w_locals_client = []
 
     for idx in idxs_users:
+        # print(f"start client {idx}")
+        # 由服务器发起连接
+        conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        conn.connect(config.clients_addr[idx])
         while True:
+            batch_start = time.time()
             # Training -----------------
-            print(f"train batch {count1} start!")
+            # print(f"server start to train batch {count1}")
             # main-server------
             # todo: receive data from client
-            fx, y, _, local_ep, _, len_batch = server_recv_from_client()
-            dfx = train_server(fx, y, iter, local_ep, idx, len_batch)
+            fx, y, local_iter, local_ep, _, len_batch = server_recv_from_client(conn)
+            # print("received ------")
+
+            dfx = train_server(fx, y, local_iter, local_ep, idx, len_batch)
             # todo: send gradients to client
-            server_send_to_client(dfx,idx)
+            server_send_to_client(dfx, conn)
+            # print(f"client {idx} completed train {count1} in {(time.time()-batch_start)/60} min")
             # 计数器清零说明所有批次完成（train_server中每个批次计数）
             if count1 == 0:
                 break
+
         # fed-server------
         # todo: receive weights from client
-        w_client = fed_recv_from_client()
+        w_client = fed_recv_from_client(conn)
         # 并将本地模型的权重w_client添加到w_locals_client列表中
         w_locals_client.append(copy.deepcopy(w_client))
 
         while True:
+            batch_start = time.time()
             # Testing -------------------
-            print(f"test batch {count2} start!")
+            # print(f"test batch {count2} start!")
             # todo: receive data from client
-            fx_, y_, _, local_ep_, _, len_batch_ = server_recv_from_client()
+            fx_, y_, _, local_ep_, _, len_batch_ = server_recv_from_client(conn)
             evaluate_server(fx_,y_,idx,len_batch_,iter)
+            # print(f"client {idx} completed test {count2} in {(time.time()-batch_start)/60} min")
             # 计数器清零说明所有批次完成（evaluate_server中每个批次计数）
             if count2 == 0:
                 break
-
+        conn.close()
 
     # Ater serving all clients for its local epochs------------
     # Fed  Server: Federation process at Client-Side-----------
     print("-----------------------------------------------------------")
     print("------ FedServer: Federation process at Client-Side ------- ")
     print("-----------------------------------------------------------")
-    w_glob_client = FedAvg(w_locals_client)
     #使用FedAvg函数来计算w_locals_client列表中所有本地模型权重的平均值，并将其赋值给w_glob_client。
+    w_glob_client = FedAvg(w_locals_client)
 
     # Update client-side global model
-    # todo: send global weights to all client
     for idx in idxs_users:
-        fed_send_to_client(w_glob_client,idx)
-    # net_glob_client.load_state_dict(w_glob_client)
-    #使用net_glob_client.load_state_dict函数来更新全局模型的权重为w_glob_client
+        # 每一轮由服务器发起连接，决定哪个客户端先开始
+        conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        conn.connect(config.clients_addr[idx])
+        # todo: send global weights to all client
+        fed_send_to_client(w_glob_client, conn)
+        conn.close()
+
+    epoch_time_collect.append(time.time()-epoch_start)
+    print(f"epoch time: {epoch_time_collect[-1]} second")
 
 #===================================================================================
 
 print("Training and Evaluation completed!")
+print(f"total time: {time.time()-start} second")
+
+save_result(program, acc_train_collect, acc_test_collect, epoch_time_collect, config.save_path)
+
 

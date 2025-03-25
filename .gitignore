@@ -1,8 +1,11 @@
-#dataset
+# dataset
 /data
-#weight
+# weight
 send/
 recv/
+# result
+save/
+*.xlsx
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

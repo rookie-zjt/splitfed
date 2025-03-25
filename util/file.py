@@ -8,9 +8,10 @@ def send_file(sock, file_path):
     file_size = os.path.getsize(file_path)
     file_name = os.path.basename(file_path)
     file_info = {'file_name': file_name, 'file_size': file_size}
-    sock.sendall(json.dumps(file_info).encode())
+    sock.sendall(json.dumps(file_info).encode("utf-8"))
     # print("send info:\n",file_info)
-
+    # 等待接收完成
+    sock.recv(4)
     # 发送文件内容
     with open(file_path, 'rb') as file:
         while True:
@@ -29,7 +30,9 @@ def receive_file(sock, recv_dir='.'):
         if len(data) < 1024:
             break
     # print('recv info:\n',file_info_json)
-    file_info = json.loads(file_info_json.decode())
+    # 接收完成
+    sock.sendall(int(200).to_bytes(4, byteorder='big'))
+    file_info = json.loads(file_info_json.decode("utf-8"))
 
     # 接收文件内容
     file_name = os.path.join(recv_dir, file_info['file_name'])
@@ -53,10 +56,10 @@ def cmp_file(file1_path, file2_path):
     # 比较文件是否一致
     return file_hash(file1_path) == file_hash(file2_path)
 
-def combine_chunks(file_name, total_chunks):
-    with open(file_name, 'wb') as outfile:
-        for i in range(total_chunks):
-            chunk_path = f'{file_name}.part{i}'
-            with open(chunk_path, 'rb') as infile:
-                outfile.write(infile.read())
-            os.remove(chunk_path)
+# def combine_chunks(file_name, total_chunks):
+#     with open(file_name, 'wb') as outfile:
+#         for i in range(total_chunks):
+#             chunk_path = f'{file_name}.part{i}'
+#             with open(chunk_path, 'rb') as infile:
+#                 outfile.write(infile.read())
+#             os.remove(chunk_path)

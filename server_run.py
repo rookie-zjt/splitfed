@@ -96,6 +96,13 @@ def server_recv_from_client(conn):
 
     return data['fx'], data['y'], data['iter'], data['l_ep'], data['idx'], data['len_b']
 
+def recv_time_from_client(conn):
+    received_data = tcp.recv_data(conn)
+    # 反序列化
+    data = pickle.loads(received_data)
+    # 返回的是两个时间列表
+    return data['f'], data['b']
+
 def fed_recv_from_client(conn):
     """
     Receiving local weights from client
@@ -120,6 +127,8 @@ def train_server(fx_client, y, l_epoch_count, l_epoch, idx, len_batch):
     global net_model_server, criterion, optimizer_server, device, batch_acc_train, batch_loss_train, l_epoch_check, fed_check
     global loss_train_collect, acc_train_collect, count1, acc_avg_all_user_train, loss_avg_all_user_train, idx_collect, w_locals_server, w_glob_server, net_server
     global loss_train_collect_user, acc_train_collect_user, lr
+    # 记录训练时间
+    global server_forward_time_collect, server_backward_time_collect
 
     net_server = copy.deepcopy(net_model_server[idx]).to(device)
     net_server.train()
@@ -132,15 +141,20 @@ def train_server(fx_client, y, l_epoch_count, l_epoch, idx, len_batch):
     y = y.to(device)
 
     # ---------forward prop-------------
+    forward_s = time.time()
     fx_server = net_server(fx_client)
-
+    # 记录前向时间
+    server_forward_time_collect.append(time.time()-forward_s)
     # calculate loss
     loss = criterion(fx_server, y)
     # calculate accuracy
     acc = calculate_accuracy(fx_server, y)
 
     # --------backward prop--------------
+    backward_s = time.time()
     loss.backward()
+    # 记录后向时间
+    server_backward_time_collect.append(time.time()-backward_s)
     dfx_client = fx_client.grad.clone().detach()
     optimizer_server.step()
 
@@ -379,7 +393,20 @@ net_model_server = [net_glob_server for i in range(num_users)]
 # 用于存储每轮选择的客户端的索引，每轮都会随机选择一部分客户端来参与（frac=1则全部参与）。
 idx_collect = []
 
+# 记录时间----------
+# 轮次时间
 epoch_time_collect = []
+# 下面几个列表，都是以批次为单位记录
+# 服务端前向传播
+server_forward_time_collect = []
+# 服务端后向传播
+server_backward_time_collect = []
+# 客户端前向传播
+clients_forward_time_collect = [[]for i in range(num_users)]
+# 客户端后向传播
+clients_backward_time_collect = [[]for i in range(num_users)]
+# 通信时间(四种通信方式c-s/s-c/c-f/f-c)
+communication_time_collect = [[[]for j in range(4)]for i in range(num_users)]
 
 # 是否需要在每个客户端上进行本地训练
 # 如果为 True，就表示需要在每个客户端上训练一定轮数（epochs）的数据，然后把模型的参数发送给服务器；
@@ -408,34 +435,54 @@ for iter in range(epochs):
         # 由服务器发起连接
         conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         conn.connect(config.clients_addr[idx])
+
+        # Training -----------------
         while True:
             batch_start = time.time()
-            # Training -----------------
-            # print(f"server start to train batch {count1}")
+            print(f"server start to train batch {count1}")
             # main-server------
-            # todo: receive data from client
-            fx, y, local_iter, local_ep, _, len_batch = server_recv_from_client(conn)
-            # print("received ------")
-
+            # 通信 receive data from client
+            server_recv_s = time.time()
+            fx, y, local_iter, local_ep, _, len_batch= server_recv_from_client(conn)
+            # 记录接收客户端i的时间
+            communication_time_collect[idx][0].append(time.time() - server_recv_s)
+            print("received ------")
+            # 包含前向和后向传播
             dfx = train_server(fx, y, local_iter, local_ep, idx, len_batch)
-            # todo: send gradients to client
+
+            # 通信 send gradients to client
+            server_send_s = time.time()
             server_send_to_client(dfx, conn)
-            # print(f"client {idx} completed train {count1} in {(time.time()-batch_start)/60} min")
+            # 记录发送给客户端i的时间
+            communication_time_collect[idx][1].append(time.time() - server_send_s)
+
+            print(f"client {idx} completed train {count1} in {(time.time()-batch_start)/60} min")
             # 计数器清零说明所有批次完成（train_server中每个批次计数）
             if count1 == 0:
                 break
 
+        # 接收客户端训练时间数据(列表)
+        f_times, b_times = recv_time_from_client(conn)
+        # 注意是列表拼接
+        # 客户端i前向传播的时间
+        clients_forward_time_collect[idx].extend(f_times)
+        # 客户端i后向传播的时间
+        clients_backward_time_collect[idx].extend(b_times)
+
         # fed-server------
-        # todo: receive weights from client
+        # 通信 receive weights from client
+        fed_recv_s = time.time()
         w_client = fed_recv_from_client(conn)
+        # 记录联邦接收客户端i的时间
+        communication_time_collect[idx][2].append(time.time() - fed_recv_s)
         # 并将本地模型的权重w_client添加到w_locals_client列表中
         w_locals_client.append(copy.deepcopy(w_client))
 
+        # Testing -------------------
         while True:
             batch_start = time.time()
-            # Testing -------------------
             # print(f"test batch {count2} start!")
-            # todo: receive data from client
+            # 通信 receive data from client
             fx_, y_, _, local_ep_, _, len_batch_ = server_recv_from_client(conn)
             evaluate_server(fx_,y_,idx,len_batch_,iter)
             # print(f"client {idx} completed test {count2} in {(time.time()-batch_start)/60} min")
@@ -457,8 +504,11 @@ for iter in range(epochs):
         # 每一轮由服务器发起连接，决定哪个客户端先开始
         conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         conn.connect(config.clients_addr[idx])
-        # todo: send global weights to all client
+        # 通信 send global weights to all client
+        fed_send_s = time.time()
         fed_send_to_client(w_glob_client, conn)
+        # 记录联邦分发给客户端i的时间
+        communication_time_collect[idx][3].append(time.time() - fed_send_s)
         conn.close()
 
     epoch_time_collect.append(time.time()-epoch_start)
@@ -470,5 +520,8 @@ print("Training and Evaluation completed!")
 print(f"total time: {time.time()-start} second")
 
 save_result(program, acc_train_collect, acc_test_collect, epoch_time_collect, config.save_path)
+
+record_time(program, server_forward_time_collect, server_backward_time_collect,
+            clients_forward_time_collect, clients_backward_time_collect, communication_time_collect, config.save_path)
 
 

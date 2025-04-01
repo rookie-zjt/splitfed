@@ -21,18 +21,20 @@ recv_path = './recv'
 
 data_path = './data'
 
+# 当前服务器机器的id
+this_cid = 0
 
 clients_addr = [
-    ('localhost', 12345),
-    ('localhost', 23456),
+    # ('localhost', 12345),
+    # ('localhost', 23456),
 
     # ('0.0.0.0', 12345),
     # ('0.0.0.0', 23456),
 
-    # ('192.168.167.113',12345),
-    # ('192.168.167.11',23456),
+    ('192.168.114.11',12345),
+    ('192.168.114.113',23456),
 ]
 
-server_addr = ('localhost',22222)
+# server_addr = ('localhost',22222)
 # server_addr = ('0.0.0.0',22222)
-# server_addr = ('192.168.167.1',11111)
+server_addr = ('192.168.114.1',11111)

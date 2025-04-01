@@ -4,6 +4,7 @@ import os.path
 import pickle
 import random
 import socket
+import time
 
 import numpy as np
 import torch
@@ -28,7 +29,7 @@ if torch.cuda.is_available():
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # 客户端id
-idx = 0
+idx = config.this_cid
 
 class DatasetSplit(Dataset):
     def __init__(self, dataset, idxs):
@@ -128,6 +129,14 @@ class Client(object):
         torch.save(weights, f'{config.send_path}/weights{idx}.pth')
         tcp.send_multi_file([f'{config.send_path}/weights{idx}.pth'], config.server_addr)
         '''
+    def send_time_to_fed(self, ftimes, btimes):
+        # 传递的是每个轮次所有批次训练时间列表
+        data = {
+            "f": ftimes,
+            "b": btimes
+        }
+        serialized_data = pickle.dumps(data)
+        tcp.send_data(serialized_data, self.conn)
 
     def recv_from_server(self):
         """
@@ -166,28 +175,41 @@ class Client(object):
         """
         net.train()
         optimizer_client = torch.optim.Adam(net.parameters(), lr=self.lr)
+        # 记录训练时间
+        forward_collect = []
+        backward_collect = []
         # 可能本地迭代多轮，再给服务器发送激活向量(默认一轮)
         for local_i in range(self.local_ep):
             len_batch = len(self.ldr_train)
             # 每一轮有多个批次
             for batch_idx, (images, labels) in enumerate(self.ldr_train):
+                print(f"server start to train batch {batch_idx}")
                 images, labels = images.to(self.device), labels.to(self.device)
                 optimizer_client.zero_grad()
                 # ---------forward prop-------------
+                forward_s = time.time()
                 fx = net(images)
+                # 记录前向传播时间
+                forward_collect.append(time.time() - forward_s)
                 client_fx = fx.clone().detach().requires_grad_(True)
-
-                # todo: Sending activations to server
+                print("to send ------")
+                # 通信 Sending activations to server
+                # 顺便传递前向传播时间
                 # dfx = train_server(client_fx, labels, iter, self.local_ep, self.idx, len_batch)
                 self.send_to_server(client_fx, labels, local_i, self.local_ep, self.idx, len_batch)
-
+                print("received ------")
                 # --------backward prop -------------
-                # todo: Receiving gradients from server
+                # 通信 Receiving gradients from server
                 dfx = self.recv_from_server()
+                backward_s = time.time()
                 fx.backward(dfx)
+                # 记录后向传播时间
+                backward_collect.append(time.time() - backward_s)
                 optimizer_client.step()
                 # print(f"train batch {batch_idx} done!")
-
+                print(f"client {idx} completed train {batch_idx}")
+        # 发送本轮次的训练时间数据
+        self.send_time_to_fed(forward_collect,backward_collect)
         return net.state_dict()
 
     def evaluate_client(self, net, ell):
@@ -202,9 +224,9 @@ class Client(object):
                 # ---------forward prop-------------
                 fx = net(images)
 
-                # todo: Sending activations to server
                 # evaluate_server(fx, labels, self.idx, len_batch, ell)
                 # iter = ell
+                # 通信 Sending activations to server
                 self.send_to_server(fx, labels, ell, self.local_ep, self.idx, len_batch)
                 # print(f"test batch {batch_idx} done!")
 
@@ -214,6 +236,8 @@ class Client(object):
 #=========================================================
 
 net_glob_client = ResNet18_client_side()
+
+
 # 创建了一个ResNet18_client_side的实例，命名为net_glob_client
 if torch.cuda.device_count() > 1:
     # 并判断是否有多个GPU可用，如果有则使用nn.DataParallel将模型分布到多个GPU上
@@ -245,7 +269,7 @@ for iter in range(config.epochs):
     print(f"epoch {iter} start")
     # Training -------------------
     w_client = local.train_client(net = copy.deepcopy(net_glob_client).to(device))
-    # todo: send weights to fed-server
+    # 通信 send weights to fed-server
     local.send_to_fed(w_client)
 
     # Testing -------------------
@@ -257,7 +281,7 @@ for iter in range(config.epochs):
     local.accept_server_connect()
     print(f"get global weights")
     # Loading aggregated weights-------------------
-    # todo: received global weights from fed-server
+    # 通信 received global weights from fed-server
     w_glob_client = local.recv_from_fed()
     # Update client-side global model
     #使用net_glob_client.load_state_dict函数来更新全局模型的权重为w_glob_client

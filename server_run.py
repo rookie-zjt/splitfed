@@ -339,7 +339,7 @@ def evaluate_server(fx_client, y, idx, len_batch, ell):
 #===================================================================
 
 # 服务器端的全局模型
-net_glob_server = ResNet18_server_side(Baseblock, [2,2,2], 7) #7 is my numbr of classes
+net_glob_server = ResNet18_server_side([2,2,2], 7) #7 is my numbr of classes
 
 # 基于 ResNet18 的卷积神经网络，使用 Baseblock 作为基本模块，有三个卷积层，[2,2,2]，每层有 2 个 Baseblock，最后有 7 个类别的输出。
 if torch.cuda.device_count() > 1:
@@ -419,7 +419,7 @@ fed_check = False
 
 #============================================================
 
-program = "SFLV1 ResNet18 on HAM10000"
+program = f"SFLV1_split{spilt} ResNet18 on HAM10000 "
 print(f"---------{program}----------")              # this is to identify the program in the slurm outputs files
 start = time.time()
 for iter in range(epochs):

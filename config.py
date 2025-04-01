@@ -11,6 +11,9 @@ frac = 1    # participation of clients; if 1 then 100% clients participate in SF
 lr = 0.0001 # learning rate
 
 model_name = 'resnet18'
+# 模型分割点（客户端最后一层）
+# 取值范围 1-3可行（todo 4-6有问题）
+spilt = 2
 
 dataset = 'HAM10000'
 

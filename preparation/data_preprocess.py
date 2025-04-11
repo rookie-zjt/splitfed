@@ -3,7 +3,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision.transforms import transforms
-
+from sklearn.model_selection import train_test_split
 
 
 # Data preprocessing: Transformation
@@ -44,6 +44,12 @@ class SkinData(Dataset):
 
         return X, y
 
+def split(df):
+    # 将数据划分为训练集和测试集，并重置索引。
+    train, test = train_test_split(df, test_size=0.2)
+    train = train.reset_index()
+    test = test.reset_index()
+    return train, test
 
 # 独立同分布（iid）数据集（用于划分不同客户端的数据集）
 def dataset_iid(dataset, num_users):

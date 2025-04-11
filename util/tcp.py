@@ -1,9 +1,5 @@
-import json
 import socket
-import threading
 import time
-
-from util.file import send_file,receive_file
 
 # 保证传入的序列化数据是字节序列(bytes)
 def send_data(serialized_data, conn_socket):
@@ -30,27 +26,20 @@ def recv_data(conn_socket):
     conn_socket.sendall(int(200).to_bytes(2, byteorder='big'))
     return serialized_data
 
+def get_connect(address, max_retries=5):
+    retries = 0
+    while retries < max_retries:
+        conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            conn.connect(address)
+            return conn
+        except Exception as e:
+            print(f"Failed {retries}/{max_retries}: {e}")
+            conn.close()
+            # 指数退避等待
+            delay = 2 ** retries
+            time.sleep(delay)
+        finally:
+            retries += 1
+    raise Exception("Reached the maximum number of retry attempts.")
 
-def send_multi_file(file_path_list, dest_addr=('localhost',22222)):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.connect(dest_addr)
-        for path in file_path_list:
-            send_file(s, path)
-            # 等待接收完成
-            s.recv(4)
-        # print(f"--- send {len(file_path_list)} files ---")
-
-
-def receive_multi_file(recv_dir='.',cnt = 1, bind_addr=('localhost',11111)):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(bind_addr)
-        s.listen(5)
-        conn, client_address = s.accept()
-        with conn:
-            for _ in range(cnt):
-                receive_file(conn,recv_dir)
-                # 接收完成
-                conn.sendall(int(200).to_bytes(4, byteorder='big'))
-            # print(f"--- received {cnt} files in {recv_dir} ---")

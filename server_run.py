@@ -12,7 +12,7 @@ from torch import nn
 import config
 from config import *
 from model.server_side import ResNet18_server_side, Baseblock
-from util import tcp
+from util.tcp import *
 from util.utility import *
 
 # 随机数相关，保证结果相同
@@ -26,7 +26,50 @@ if torch.cuda.is_available():
 # 有gpu就用cuda训练
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-#====================================================================
+
+# 通信相关函数==================================================
+def server_send_to_client(dfx,conn):
+    """
+    Sending gradients to clients
+    """
+    # 序列化
+    serialized_data = pickle.dumps(dfx)
+    send_data(serialized_data, conn)
+
+def fed_send_to_client(glob_weights,conn):
+    """
+    Sending global gradients to clients
+    """
+    # 序列化
+    serialized_data = pickle.dumps(glob_weights)
+    send_data(serialized_data, conn)
+
+def server_recv_from_client(conn):
+    """
+    Receiving fx,y,and other from client
+    """
+    received_data = recv_data(conn)
+    # 反序列化
+    data = pickle.loads(received_data)
+    return data['fx'], data['y'], data['iter'], data['l_ep'], data['idx'], data['len_b']
+
+def fed_recv_from_client(conn):
+    """
+    Receiving local weights from client
+    """
+    received_data = recv_data(conn)
+    # 反序列化
+    local_w = pickle.loads(received_data)
+    return local_w
+
+def recv_time_from_client(conn):
+    received_data = recv_data(conn)
+    # 反序列化
+    data = pickle.loads(received_data)
+    # 返回的是两个时间列表
+    return data['f'], data['b']
+
+# 模型计算相关函数====================================================================
 def FedAvg(w):
 #FedAvg 函数负责对本地模型进行平均
 #它接收一个本地模型的列表 (w)，其中每个元素都是一个包含模型权重的字典，然后返回一个字典 (w_avg)
@@ -47,83 +90,20 @@ def FedAvg(w):
     # 代码的意思是，对于每个参数 k，把 w_avg[k] 这个张量除以 w 这个列表的长度，也就是客户端的个数，然后把结果赋值给 w_avg[k]。这样就可以得到所有客户端模型参数的平均值。
     return w_avg
 
-
 def calculate_accuracy(fx, y):
     preds = fx.max(1, keepdim=True)[1]
     correct = preds.eq(y.view_as(preds)).sum()
     acc = 100.00 * correct.float()/preds.shape[0]
     return acc
 
-def server_send_to_client(dfx,conn):
-    """
-    Sending gradients to clients
-    """
-    # 序列化
-    serialized_data = pickle.dumps(dfx)
-    tcp.send_data(serialized_data, conn)
-    '''
-    torch.save(dfx, f'{send_path}/grad{idx}.pth')
-    tcp.send_multi_file([f'{send_path}/grad{idx}.pth'],config.clients_addr[idx])
-    '''
-
-def fed_send_to_client(glob_weights,conn):
-    """
-    Sending global gradients to clients
-    """
-    # 序列化
-    serialized_data = pickle.dumps(glob_weights)
-    tcp.send_data(serialized_data, conn)
-    '''
-    torch.save(glob_weights, f'{send_path}/glob_grad{idx}.pth')
-    tcp.send_multi_file([f'{send_path}/glob_grad{idx}.pth'],config.clients_addr[idx])
-    '''
-
-def server_recv_from_client(conn):
-    """
-    Receiving fx,y,and other from client
-    """
-    received_data = tcp.recv_data(conn)
-    # 反序列化
-    data = pickle.loads(received_data)
-    '''
-    tcp.receive_multi_file(config.recv_path, 3, config.server_addr)
-    with open(f'{config.recv_path}/other{idx}.json',encoding='utf-8') as f:
-        js_data = f.read()
-    data = json.loads(js_data)
-    y = torch.load(f'{config.recv_path}/y{idx}.pth')
-    fx = torch.load(f'{config.recv_path}/fx{idx}.pth')
-    '''
-
-    return data['fx'], data['y'], data['iter'], data['l_ep'], data['idx'], data['len_b']
-
-def recv_time_from_client(conn):
-    received_data = tcp.recv_data(conn)
-    # 反序列化
-    data = pickle.loads(received_data)
-    # 返回的是两个时间列表
-    return data['f'], data['b']
-
-def fed_recv_from_client(conn):
-    """
-    Receiving local weights from client
-    """
-    received_data = tcp.recv_data(conn)
-    # 反序列化
-    local_w = pickle.loads(received_data)
-    '''
-    tcp.receive_multi_file(config.recv_path, 1, config.server_addr)
-    local_w = torch.load(f'{config.recv_path}/weights{idx}.pth')
-    '''
-    return local_w
-
 def train_server(fx_client, y, l_epoch_count, l_epoch, idx, len_batch):
     #fx_client: 客户端设备上的特征向量
     #y: 客户端设备上的标签向量
     #idx: 服务器的索引
-    #len_batch: 一个批次的大小
+    #len_batch: 批次的个数
     # l_epoch_count: 客户端本地已经训练次数
     # l_epoch: 客户端本地需要训练次数
-    # ps: l_epoch和epoch不是一个东西，l_epoch是指每一轮客户端可能本地迭代多次
+    # ps: l_epoch和epoch不是一个东西，l_epoch是指每一轮客户端可能本地多次
     global net_model_server, criterion, optimizer_server, device, batch_acc_train, batch_loss_train, l_epoch_check, fed_check
     global loss_train_collect, acc_train_collect, count1, acc_avg_all_user_train, loss_avg_all_user_train, idx_collect, w_locals_server, w_glob_server, net_server
     global loss_train_collect_user, acc_train_collect_user, lr
@@ -234,7 +214,7 @@ def evaluate_server(fx_client, y, idx, len_batch, ell):
     #fx_client: 客户端设备上的特征向量
     #y: 客户端设备上的标签向量
     #idx: 服务器的索引
-    #len_batch: 一个批次的大小
+    #len_batch: 批次的个数
     #ell: 一个本地训练周期的长度
     global net_model_server, criterion, batch_acc_test, batch_loss_test, check_fed, net_server, net_glob_server
     # net_model_server: 一个列表，存储了每个服务器上的模型
@@ -351,8 +331,7 @@ net_glob_server.to(device)
 
 print(net_glob_server)
 
-#===================================================================================
-# For Server Side Loss and Accuracy
+# 训练过程中的相关数据记录===================================================================================
 # 每个epoch的损失和准确率
 loss_train_collect = []
 acc_train_collect = []
@@ -378,22 +357,20 @@ acc_train_collect_user = []
 loss_test_collect_user = []
 acc_test_collect_user = []
 
-# 全局模型的参数字典
-w_glob_server = net_glob_server.state_dict()
 # 用于存储每个客户端模型的参数字典
 w_locals_server = []
 
 # Initialization of net_model_server and net_server (server-side model)
 # 服务端模型
 net_server = copy.deepcopy(net_glob_server).to(device)
-# 全局模型列表，每个客户端都拥有一个独立的全局模型。
+# 全局模型列表，每个客户端都拥有一个独立的服务端模型。
 net_model_server = [net_glob_server for i in range(num_users)]
 
 #client idx collector
-# 用于存储每轮选择的客户端的索引，每轮都会随机选择一部分客户端来参与（frac=1则全部参与）。
+# 用于存储每轮选择的客户端的索引，每轮都会随机选择一部分客户端来参与（默认frac=1则全部参与）。
 idx_collect = []
 
-# 记录时间----------
+# 记录时间----------------------------------
 # 轮次时间
 epoch_time_collect = []
 # 下面几个列表，都是以批次为单位记录
@@ -405,7 +382,8 @@ server_backward_time_collect = []
 clients_forward_time_collect = [[]for i in range(num_users)]
 # 客户端后向传播
 clients_backward_time_collect = [[]for i in range(num_users)]
-# 通信时间(四种通信方式c-s/s-c/c-f/f-c)
+# 通信时间(四种通信方式）
+# 分别对应client -> server/ server -> client/ client -> fed/ fed -> client)
 communication_time_collect = [[[]for j in range(4)]for i in range(num_users)]
 
 # 是否需要在每个客户端上进行本地训练
@@ -418,6 +396,10 @@ l_epoch_check = False
 fed_check = False
 
 #============================================================
+
+# 服务器模型的参数字典
+w_glob_server = net_glob_server.state_dict()
+
 
 program = f"SFLV1_split{spilt} ResNet18 on HAM10000 "
 print(f"---------{program}----------")              # this is to identify the program in the slurm outputs files
@@ -433,24 +415,23 @@ for iter in range(epochs):
     for idx in idxs_users:
         # print(f"start client {idx}")
         # 由服务器发起连接
-        conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        conn.connect(config.clients_addr[idx])
+        conn = get_connect(config.clients_addr[idx])
 
         # Training -----------------
         while True:
             batch_start = time.time()
-            print(f"server start to train batch {count1}")
+            # print(f"server start to train batch {count1}")
             # main-server------
-            # 通信 receive data from client
+            # 通信0: receive data from client
             server_recv_s = time.time()
-            fx, y, local_iter, local_ep, _, len_batch= server_recv_from_client(conn)
+            fx, y, local_iter, local_ep, _, len_batch = server_recv_from_client(conn)
             # 记录接收客户端i的时间
             communication_time_collect[idx][0].append(time.time() - server_recv_s)
-            print("received ------")
-            # 包含前向和后向传播
+            # print("received ------")
+            # 服务端的前向和后向传播
             dfx = train_server(fx, y, local_iter, local_ep, idx, len_batch)
 
-            # 通信 send gradients to client
+            # 通信1: send gradients to client
             server_send_s = time.time()
             server_send_to_client(dfx, conn)
             # 记录发送给客户端i的时间
@@ -463,14 +444,14 @@ for iter in range(epochs):
 
         # 接收客户端训练时间数据(列表)
         f_times, b_times = recv_time_from_client(conn)
-        # 注意是列表拼接
-        # 客户端i前向传播的时间
+
+        # 记录客户端i前向传播的时间
         clients_forward_time_collect[idx].extend(f_times)
-        # 客户端i后向传播的时间
+        # 记录客户端i后向传播的时间
         clients_backward_time_collect[idx].extend(b_times)
 
         # fed-server------
-        # 通信 receive weights from client
+        # 通信2: receive weights from client
         fed_recv_s = time.time()
         w_client = fed_recv_from_client(conn)
         # 记录联邦接收客户端i的时间
@@ -502,9 +483,8 @@ for iter in range(epochs):
     # Update client-side global model
     for idx in idxs_users:
         # 每一轮由服务器发起连接，决定哪个客户端先开始
-        conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        conn.connect(config.clients_addr[idx])
-        # 通信 send global weights to all client
+        conn = get_connect(config.clients_addr[idx])
+        # 通信3: send global weights to all client
         fed_send_s = time.time()
         fed_send_to_client(w_glob_client, conn)
         # 记录联邦分发给客户端i的时间
@@ -519,7 +499,8 @@ for iter in range(epochs):
 print("Training and Evaluation completed!")
 print(f"total time: {time.time()-start} second")
 
-save_result(program, acc_train_collect, acc_test_collect, epoch_time_collect, config.save_path)
+# 训练结束，记录相关数据
+save_result(program, acc_train_collect, acc_test_collect, loss_train_collect, loss_test_collect, epoch_time_collect, config.save_path)
 
 record_time(program, server_forward_time_collect, server_backward_time_collect,
             clients_forward_time_collect, clients_backward_time_collect, communication_time_collect, config.save_path)

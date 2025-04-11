@@ -1,7 +1,5 @@
 import os
-
-import pandas as pd
-from pandas import DataFrame,concat
+from pandas import DataFrame, concat
 
 def prRed(skk): print("\033[91m {}\033[00m".format(skk))
 
@@ -10,14 +8,16 @@ def prGreen(skk): print("\033[92m {}\033[00m".format(skk))
 
 
 # Save output data to .excel file (we use for comparision plots)
-def save_result(program_name, acc_train_collect, acc_test_collect, epoch_time_collect, save_dir = "."):
+def save_result(program_name, acc_train_collect, acc_test_collect, loss_train_collect, loss_test_collect, epoch_time_collect, save_dir = "."):
     # 联邦学习的轮数
     round_process = [i for i in range(1, len(acc_train_collect) + 1)]
-    # df三个数据列分别对应轮数、训练准确率和测试准确率。
+
     df = DataFrame({
         'round': round_process,
         'acc_train': acc_train_collect,
         'acc_test': acc_test_collect,
+        'loss_train': loss_train_collect,
+        'loss_test': loss_test_collect,
         'epoch_time': epoch_time_collect
     })
     file_name = os.path.join(save_dir, program_name + ".xlsx")
@@ -40,11 +40,11 @@ def record_time(program_name,
         "server_forward":server_f_collect,
         "server_backward": server_b_collect
     })
-    # 注意多维list转dataframe
+    # 多维list转dataframe
     # 多个客户端
     df2 = DataFrame(clients_f_collect, index=[f"client_{i}_forward" for i in range(len(clients_f_collect))]).T
     df3 = DataFrame(clients_b_collect, index=[f"client_{i}_backward" for i in range(len(clients_b_collect))]).T
-    # 多个客户端，多个通信方式
+    # 多个客户端，4个通信方式
     flat_head = [f"client_{i}_communicate_{j}"  for i in range(len(communication_collect)) for j in range(4)]
     flat_communication = [sublist for block in communication_collect for sublist in block]
     df4 = DataFrame(flat_communication, index=flat_head).T

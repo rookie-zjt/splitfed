@@ -32,10 +32,10 @@ class Baseblock(nn.Module):
 class ResNet18_client_side(nn.Module):
     def __init__(self):
         super(ResNet18_client_side, self).__init__()
-
+        # _layer的输入通道数
         self.input_planes = 64
         block = Baseblock
-        num_layers = [2,2,2]
+        # 图像分类数
         classes = 7
 
         self.layer1 = nn.Sequential(
@@ -61,14 +61,14 @@ class ResNet18_client_side(nn.Module):
                 nn.BatchNorm2d(64),
             )
         if spilt > 3:
-            self.layer4 = self._layer(block, 128, num_layers[0], stride=2)
+            self.layer4 = self._layer(block, 128, 2, stride=2)
         if spilt > 4:
-            self.layer5 = self._layer(block, 256, num_layers[1], stride=2)
+            self.layer5 = self._layer(block, 256, 2, stride=2)
         if spilt > 5:
-            self.layer6 = self._layer(block, 512, num_layers[2], stride=2)
-
-            self.averagePool = nn.AvgPool2d(kernel_size=7, stride=1)
-
+            self.layer6 = self._layer(block, 512, 2, stride=2)
+        if spilt > 6:
+            # 输入图像比较小，使用2*2，原版的7*7卷积核太大了
+            self.averagePool = nn.AvgPool2d(kernel_size=2, stride=1)
             self.fc = nn.Linear(512 * block.expansion, classes)
 
         for m in self.modules():
@@ -99,13 +99,13 @@ class ResNet18_client_side(nn.Module):
             return x1
 
         out1 = self.layer2(x1)
-        out1 = out1 + x1  # adding the resudial inputs -- downsampling not required in this layer
+        out1 = out1 + x1
         x2 = F.relu(out1)
         if spilt == 2:
             return x2
 
         out2 = self.layer3(x2)
-        out2 = out2 + x2  # adding the resudial inputs -- downsampling not required in this layer
+        out2 = out2 + x2
         x3 = F.relu(out2)
         if spilt == 3:
             return x3
@@ -119,9 +119,12 @@ class ResNet18_client_side(nn.Module):
             return x5
 
         x6 = self.layer6(x5)
-        # x7 = F.avg_pool2d(x6, 7)
-        x7 = F.avg_pool2d(x6, 2)  # 7*7卷积核太大了
+        if spilt == 6:
+            return x6
+
+        x7 = self.averagePool(x6)
+        # x7 = F.avg_pool2d(x6, 2)
         x8 = x7.view(x7.size(0), -1)
         y_hat = self.fc(x8)
-        # split == 6表示完整结构
+
         return y_hat

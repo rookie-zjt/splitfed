@@ -13,9 +13,9 @@ from torch.utils.data import DataLoader, Dataset
 
 import config
 from model.client_side import ResNet18_client_side
-from preparation.data_load import get_dataset, split
-from preparation.data_preprocess import SkinData, train_transforms, test_transforms, dataset_iid
-from util import tcp
+from preparation.data_load import get_dataset
+from preparation.data_preprocess import SkinData, train_transforms, test_transforms, dataset_iid, split
+from util.tcp import *
 
 # 随机数相关，保证结果相同
 random.seed(config.SEED)
@@ -87,7 +87,7 @@ class Client(object):
 
     def send_to_server(self, fx, y, iter, local_ep, idx, len_batch):
         """
-        Sending activations(fx), labels(y), client_id(idx), len_batch to server
+        Sending activations(fx), labels(y), local_iter(iter), client_id(idx), len_batch to server
         """
         data = {
             "fx": fx,
@@ -99,24 +99,8 @@ class Client(object):
         }
         # 序列化
         serialized_data = pickle.dumps(data)
-        tcp.send_data(serialized_data, self.conn)
-        '''
-       # 文件形式保存
-        flist = [f'{config.send_path}/other{idx}.json',f'{config.send_path}/y{idx}.pth',f'{config.send_path}/fx{idx}.pth']
-        dict = {
-            "iter": iter,
-            "l_ep": local_ep,
-            "idx": idx,
-            "len_b": len_batch
-        }
-        js_data = json.dumps(dict)
-        with open(flist[0],'w',encoding='utf-8') as f:
-            f.write(js_data)
-        torch.save(y, flist[1])
-        torch.save(fx, flist[2])
-        # 传多个文件
-        tcp.send_multi_file(flist, config.server_addr)
-    '''
+        send_data(serialized_data, self.conn)
+
 
     def send_to_fed(self, weights):
         """
@@ -124,33 +108,15 @@ class Client(object):
         """
         # 序列化
         serialized_data = pickle.dumps(weights)
-        tcp.send_data(serialized_data, self.conn)
-        '''
-        torch.save(weights, f'{config.send_path}/weights{idx}.pth')
-        tcp.send_multi_file([f'{config.send_path}/weights{idx}.pth'], config.server_addr)
-        '''
-    def send_time_to_fed(self, ftimes, btimes):
-        # 传递的是每个轮次所有批次训练时间列表
-        data = {
-            "f": ftimes,
-            "b": btimes
-        }
-        serialized_data = pickle.dumps(data)
-        tcp.send_data(serialized_data, self.conn)
+        send_data(serialized_data, self.conn)
 
     def recv_from_server(self):
         """
         Receiving gradients from MainServer
         """
-        received_data = tcp.recv_data(self.conn)
+        received_data = recv_data(self.conn)
         # 反序列化
         grad = pickle.loads(received_data)
-        '''
-        # 接收文件
-        tcp.receive_multi_file(config.recv_path,1,config.clients_addr[0])
-        # 加载文件
-        data = torch.load(f'{config.recv_path}/grad{idx}.pth')
-        '''
         return grad
 
 
@@ -158,16 +124,19 @@ class Client(object):
         """
         Receiving global weights from FedServer
         """
-        received_data = tcp.recv_data(self.conn)
+        received_data = recv_data(self.conn)
         # 反序列化
         glob_weights = pickle.loads(received_data)
-        '''
-        # 接收文件
-        tcp.receive_multi_file(config.recv_path,1,config.clients_addr[0])
-        # 加载文件
-        data = torch.load(f'{config.recv_path}/glob_grad{idx}.pth')
-        '''
         return glob_weights
+
+    def send_time_to_fed(self, ftimes, btimes):
+        # 传递的是每个轮次所有批次训练时间列表
+        data = {
+            "f": ftimes,
+            "b": btimes
+        }
+        serialized_data = pickle.dumps(data)
+        send_data(serialized_data, self.conn)
 
     def train_client(self, net):
         """
@@ -183,7 +152,7 @@ class Client(object):
             len_batch = len(self.ldr_train)
             # 每一轮有多个批次
             for batch_idx, (images, labels) in enumerate(self.ldr_train):
-                print(f"server start to train batch {batch_idx}")
+                # print(f"client start to train batch {batch_idx}")
                 images, labels = images.to(self.device), labels.to(self.device)
                 optimizer_client.zero_grad()
                 # ---------forward prop-------------
@@ -192,24 +161,21 @@ class Client(object):
                 # 记录前向传播时间
                 forward_collect.append(time.time() - forward_s)
                 client_fx = fx.clone().detach().requires_grad_(True)
-                print("to send ------")
-                # 通信 Sending activations to server
-                # 顺便传递前向传播时间
-                # dfx = train_server(client_fx, labels, iter, self.local_ep, self.idx, len_batch)
+                # print("to send ------")
+                # 通信0: Sending activations to server
                 self.send_to_server(client_fx, labels, local_i, self.local_ep, self.idx, len_batch)
-                print("received ------")
+                # print("sent ------")
                 # --------backward prop -------------
-                # 通信 Receiving gradients from server
+                # 通信1: Receiving gradients from server
                 dfx = self.recv_from_server()
                 backward_s = time.time()
                 fx.backward(dfx)
                 # 记录后向传播时间
                 backward_collect.append(time.time() - backward_s)
                 optimizer_client.step()
-                # print(f"train batch {batch_idx} done!")
-                print(f"client {idx} completed train {batch_idx}")
+                # print(f"client {idx} completed train {batch_idx}")
         # 发送本轮次的训练时间数据
-        self.send_time_to_fed(forward_collect,backward_collect)
+        self.send_time_to_fed(forward_collect, backward_collect)
         return net.state_dict()
 
     def evaluate_client(self, net, ell):
@@ -223,8 +189,6 @@ class Client(object):
                 images, labels = images.to(self.device), labels.to(self.device)
                 # ---------forward prop-------------
                 fx = net(images)
-
-                # evaluate_server(fx, labels, self.idx, len_batch, ell)
                 # iter = ell
                 # 通信 Sending activations to server
                 self.send_to_server(fx, labels, ell, self.local_ep, self.idx, len_batch)
@@ -249,7 +213,7 @@ print(net_glob_client)
 #==============================================
 
 
-# 划分数据集并增强数据
+# 划分训练和测试集并增强数据
 train, test = split(get_dataset())
 dataset_train = SkinData(train, transform = train_transforms)
 dataset_test = SkinData(test, transform = test_transforms)
@@ -259,17 +223,19 @@ idxs_test = dataset_iid(dataset_test, config.num_users)
 #=========================================================
 #创建一个Client对象，用于联邦学习的本地模型。
 local = Client(net_glob_client, idx, config.lr, device, dataset_train = dataset_train, dataset_test = dataset_test, idxs_train = idxs_train[idx], idxs_test = idxs_test[idx])
-#copy weights
+
+# 客户端模型的参数字典
 w_glob_client = net_glob_client.state_dict()
+
 # Training ------------------
 # this epoch is global epoch, also known as rounds
 for iter in range(config.epochs):
     # 每轮由服务器决定何时开始
     local.accept_server_connect()
-    print(f"epoch {iter} start")
+    # print(f"epoch {iter} start")
     # Training -------------------
     w_client = local.train_client(net = copy.deepcopy(net_glob_client).to(device))
-    # 通信 send weights to fed-server
+    # 通信2: send weights to fed-server
     local.send_to_fed(w_client)
 
     # Testing -------------------
@@ -279,12 +245,13 @@ for iter in range(config.epochs):
 
     # 服务器与所有客户端都交互之后，再接收全局权重
     local.accept_server_connect()
-    print(f"get global weights")
+    # print(f"get global weights")
+
     # Loading aggregated weights-------------------
-    # 通信 received global weights from fed-server
+    # 通信3: received global weights from fed-server
     w_glob_client = local.recv_from_fed()
     # Update client-side global model
-    #使用net_glob_client.load_state_dict函数来更新全局模型的权重为w_glob_client
+    # 更新全局模型的权重为w_glob_client
     net_glob_client.load_state_dict(w_glob_client)
     local.disconnect_server()
 

@@ -1,43 +1,39 @@
+# 随机种子
 SEED = 1234
-
-num_users = 2
+# 参与的客户端数量
+num_users = 1
 
 batch_size = 256
 
-epochs = 2
+epochs = 1
 
-frac = 1    # participation of clients; if 1 then 100% clients participate in SFLV1
+# participation of clients; if 1 then 100% clients participate in SFLV1
+frac = 1
 
-lr = 0.0001 # learning rate
+# learning rate
+lr = 0.0001
 
 model_name = 'resnet18'
-# 模型分割点（客户端最后一层）
-# 取值范围 1-3可行（todo 4-6有问题）
-spilt = 2
+# 模型分割位置（客户端最后一层）
+# 取值范围 1-6（具体参考struct-split.png）
+spilt = 6
 
 dataset = 'HAM10000'
-
+# 结果记录存放路径
 save_path = './save'
-
-send_path = './send'
-recv_path = './recv'
-
+# 数据集存放路径
 data_path = './data'
-
-# 当前服务器机器的id
+# 当前客户端机器的id
 this_cid = 0
 
 clients_addr = [
-    # ('localhost', 12345),
-    # ('localhost', 23456),
+    ('localhost', 12345),
+    ('localhost', 23456),
 
-    # ('0.0.0.0', 12345),
-    # ('0.0.0.0', 23456),
-
-    ('192.168.114.11',12345),
-    ('192.168.114.113',23456),
+    # ('192.168.99.11',12345),
+    # ('192.168.99.113',23456),
 ]
+# 可以不配置服务器地址
+server_addr = ('localhost',22222)
 
-# server_addr = ('localhost',22222)
-# server_addr = ('0.0.0.0',22222)
-server_addr = ('192.168.114.1',11111)
+# server_addr = ('192.168.99.1',11111)

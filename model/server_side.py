@@ -33,7 +33,9 @@ class Baseblock(nn.Module):
 class ResNet18_server_side(nn.Module):
     def __init__(self, num_layers, classes, block = Baseblock ):
         super(ResNet18_server_side, self).__init__()
-        self.input_planes = 64
+        # 根据不同分割方式，决定_layer的输入通道数
+        multi = (1 << (spilt-3)) if spilt > 3 else 1
+        self.input_planes = 64 * multi
         if spilt < 1:
             self.layer1 = nn.Sequential(
                 nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
@@ -64,9 +66,9 @@ class ResNet18_server_side(nn.Module):
         if spilt < 6:
             self.layer6 = self._layer(block, 512, num_layers[2], stride=2)
 
-            self.averagePool = nn.AvgPool2d(kernel_size=7, stride=1)
-
-            self.fc = nn.Linear(512 * block.expansion, classes)
+        # 输入图像比较小，使用2*2，原版的7*7卷积核太大了
+        self.averagePool = nn.AvgPool2d(kernel_size=2, stride=1)
+        self.fc = nn.Linear(512 * block.expansion, classes)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -97,6 +99,7 @@ class ResNet18_server_side(nn.Module):
         x3 = x
         x4 = x
         x5 = x
+        x6 = x
         y_hat = x
 
         if spilt < 1:
@@ -120,9 +123,9 @@ class ResNet18_server_side(nn.Module):
         if spilt < 6:
             x6 = self.layer6(x5)
 
-            # x7 = F.avg_pool2d(x6, 7)
-            x7 = F.avg_pool2d(x6, 2)  # 7*7卷积核太大了
-            x8 = x7.view(x7.size(0), -1)
-            y_hat = self.fc(x8)
+        x7 = self.averagePool(x6)
+        # x7 = F.avg_pool2d(x6, 2)
+        x8 = x7.view(x7.size(0), -1)
+        y_hat = self.fc(x8)
 
         return y_hat

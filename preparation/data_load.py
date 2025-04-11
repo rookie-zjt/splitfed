@@ -2,7 +2,7 @@ import os
 from glob import glob
 
 import pandas as pd
-from sklearn.model_selection import train_test_split
+
 
 
 def get_dataset(name='HAM10000'):
@@ -10,7 +10,7 @@ def get_dataset(name='HAM10000'):
     if name == 'HAM10000':
         df = pd.read_csv('data/HAM10000_metadata.csv')
         print(df.head())
-        # 名字全称（非必要）
+        # 标签的名字全称（非必要）
         lesion_type = {
             'nv': 'Melanocytic nevi',
             'mel': 'Melanoma',
@@ -34,9 +34,4 @@ def get_dataset(name='HAM10000'):
 
     return df
 
-def split(df):
-    # 将数据划分为训练集和测试集，并重置索引。
-    train, test = train_test_split(df, test_size=0.2)
-    train = train.reset_index()
-    test = test.reset_index()
-    return train, test
+

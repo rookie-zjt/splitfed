@@ -15,6 +15,8 @@ https://github.com/chandra2thapa/SplitFed-When-Federated-Learning-Meets-Split-Le
     - client-side
     - main server
 
+### 流程
+
 **每轮迭代流程**
 - 每一批次batch都需要服务器和客户端交换数据，所有批次结束，使用了整个数据集所有样本一次
 - 客户端可以本地迭代多轮local_epoch，默认本地迭代只有一轮
@@ -22,17 +24,22 @@ https://github.com/chandra2thapa/SplitFed-When-Federated-Learning-Meets-Split-Le
 
 *每个batch过程中*
 
-client (前半部分forward) ====(激活层输出，样本标签)====> main server（后半部分forward）\
-client (前半部分back) <====(梯度)==== main server（后半部分back）
+**通信0**  client (前半部分forward) ====(激活层输出，样本标签)====> main server（后半部分forward）
+
+**通信1**  client (前半部分back) <====(梯度)==== main server（后半部分back）
 
 *每个local_epoch结束后*
 
-client ====(本地权重)====> fed 
+**通信2**  client ====(本地权重)====> fed 
 
-*每个epoch结束后*
+*每个epoch结束后，fed进行客户端权重聚合*
 
-client <====(整体平均化权重)==== fed 
+**通信3**  client <====(整体平均化权重)==== fed 
 
+
+每个batch进行一次通信0和通信1，每个epoch进行一次通信2和通信3。
+
+由于一个epoch包含多个batch，因此在一个epoch中，会包含多次（次数等于batch数）通信0和通信1，以及一次通信2和通信3。
 
 ### 算法
 - 服务端server
@@ -49,6 +56,59 @@ client <====(整体平均化权重)==== fed
 1. 模型的前半部分的前向传播
 2. 等main前后传播之后，再后向传播
 3. 等fed进行聚合更新
+
+
+伪代码（参考论文中的英文伪代码）：
+- 客户端更新算法
+```
+1  for 每一个轮次t (t=0,1,2…T) ：
+2    接收W_(C,t)←联邦服务器聚合算法（第5或13行）
+3    执行前向传播，在W_(C,t)上使用X_k计算得到A_(k,t)
+4    发送(A_(k,t),Y_k)→主服务器更新算法（第6行）
+5    接收∇l_k (A_(k,t))←主服务器更新算法（第10行）
+6    执行后向传播，基于W_(C,t)使用∇l_k (A_(k,t))计算更新W_(C,k,t)
+7    发送W_(C,k,t)→联邦服务器聚合算法（第9行）
+8  end for
+```
+
+- 主服务器更新算法
+```
+1   for 每一个轮次t (t=0,1,2…T) ：
+2     if t=0 ：
+3       初始化W_(S,t)（全局服务器权重）
+4     else 
+5       for 每一个客户端C_k  (k=1,2…n) ：
+6         接收(A_(k,t),Y_k)←客户端更新算法（第4行）
+7         执行前向传播，在W_(S,t)上使用A_(k,t)计算得到(Y_k ) ̂
+8         用Y_k和 (Y_k ) ̂计算损失函数值与准确率
+9         执行后向传播，计算得到∇l_k (A_(k,t))和W_(S,k,t)
+10        发送∇l_k (A_(k,t))→客户端更新算法（第5行）
+11      end for
+12      更新服务器权重W_(S,t+1)=∑_(k=1)^n (m_k/m)·W_(S,k,t)
+13    end if
+14  end for
+```
+
+- 联邦服务器更新算法
+```
+1	for 每一个轮次t (t=0,1,2…T) ：
+2	  if t=0 ：
+3	    初始化W_(C,t)（全局客户端权重）
+4	    for 每一个客户端C_k  (k=1,2…n) ：
+5	      发送W_(C,t)→客户端更新算法（第2行）
+6	    end for
+7	  else 
+8	    for 每一个客户端C_k  (k=1,2…n) ：
+9	      接收W_(C,k,t)←客户端更新算法（第7行）
+10	    end for
+11	    更新客户端权重W_(C,t+1)=∑_(k=1)^n (m_k/m)·W_(C,k,t)
+12	    for 每一个客户端C_k  (k=1,2…n) ：
+13	      发送W_(C,t+1)→客户端更新算法（第2行）
+14	    end for
+15	  end if
+16  end for
+```
+
 
 #### 论文提到的两个变体
 - 基于服务端的聚合 sfl-v1（已实现）

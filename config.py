@@ -1,11 +1,11 @@
 # 随机种子
 SEED = 1234
 # 参与的客户端数量
-num_users = 1
+num_users = 2
 
 batch_size = 256
 
-epochs = 1
+epochs = 2
 
 # participation of clients; if 1 then 100% clients participate in SFLV1
 frac = 1
